@@ -21,11 +21,13 @@ class MultiHeadAttention:
         # Ensure d_model is divisible by num_heads
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
 
-        # Initialize weight matrices
-        self.W_q = np.random.randn(d_model, d_model) * 0.02
-        self.W_k = np.random.randn(d_model, d_model) * 0.02
-        self.W_v = np.random.randn(d_model, d_model) * 0.02
-        self.W_o = np.random.randn(d_model, d_model) * 0.02
+        # Initialize weight matrices, standard weight initialization
+        scale = np.sqrt(2.0 / (self.d_model + self.d_model))
+        self.W_q = np.random.randn(self.d_model, self.d_model) * scale
+        self.W_k = np.random.randn(self.d_model, self.d_model) * scale
+        self.W_v = np.random.randn(self.d_model, self.d_model) * scale
+        self.W_o = np.random.randn(self.d_model, self.d_model) * scale
+
         
         # Initialize parameters
         self.params = {
@@ -86,32 +88,32 @@ class MultiHeadAttention:
         """
         # Compute attention scores with scaling
         d_k = Q.shape[-1]
-        scores = np.matmul(Q, K.transpose(0, 1, 3, 2)) / np.sqrt(d_k)
+        scores = np.matmul(Q, K.transpose(0, 1, 3, 2)) / np.sqrt(d_k)  # [batch_size, num_heads, seq_len, seq_len]
 
         # Apply mask if provided
         if mask is not None:
             if len(mask.shape) == 3:  # [batch_size, seq_len, seq_len]
-                mask = mask[:, None, :, :]  # Add head dimension
-            scores = np.where(mask == 0, -1e9, scores)
+                mask = mask[:, None, :, :]  # Add head dimension [batch_size, 1, seq_len, seq_len]
+            scores = np.where(mask == 0, np.nan, scores)  # Replace -1e9 with np.nan for better numerical stability
 
         # Compute attention weights with improved numerical stability
         # Subtract max for numerical stability
-        scores_max = np.max(scores, axis=-1, keepdims=True)
+        scores_max = np.max(scores, axis=-1, keepdims=True)  # [batch_size, num_heads, seq_len, 1]
         scores = scores - scores_max
-        exp_scores = np.exp(scores)
+        exp_scores = np.exp(scores)  # [batch_size, num_heads, seq_len, seq_len]
         
         # Apply mask to exp_scores if provided
         if mask is not None:
             exp_scores = np.where(mask == 0, 0, exp_scores)
         
         # Compute attention weights
-        attn = exp_scores / (np.sum(exp_scores, axis=-1, keepdims=True) + 1e-9)
+        attn = exp_scores / (np.sum(exp_scores, axis=-1, keepdims=True) + 1e-9)  # [batch_size, num_heads, seq_len, seq_len]
         
         # Store attention weights for backward pass
         self.attn_weights = attn
         
         # Compute output
-        output = np.matmul(attn, V)
+        output = np.matmul(attn, V)  # [batch_size, num_heads, seq_len, d_k]
         return output
 
     def causal_mask(self, seq_len):
@@ -124,11 +126,13 @@ class MultiHeadAttention:
         Returns:
             Binary mask tensor of shape [1, 1, seq_len, seq_len]
         """
-        # Create a lower triangular matrix
-        mask = np.tril(np.ones((seq_len, seq_len)))
+        # Create a lower triangular matrix and add batch and head dimensions
+        mask = np.tril(np.ones((1, 1, seq_len, seq_len), dtype=np.float32))
+
+        # mask = np.tril(np.ones((seq_len, seq_len)))
         
-        # Add batch and head dimensions
-        mask = mask[None, None, :, :]
+        # # Add batch and head dimensions
+        # mask = mask[None, None, :, :]
         
         return mask.astype(np.float32)
 

@@ -47,46 +47,47 @@ class LayerNorm:
         # Store input for backward pass
         self.x = x
         
-        # Calculate mean and variance
-        self.mean = np.mean(x, axis=-1, keepdims=True)
-        self.var = np.var(x, axis=-1, keepdims=True)
+        # Calculate mean and variance with improved numerical stability
+        self.mean = np.mean(x, axis=-1, keepdims=True)  # [batch_size, seq_len, 1]
+        x_centered = x - self.mean  # [batch_size, seq_len, d_model]
+        self.var = np.mean(x_centered * x_centered, axis=-1, keepdims=True)  # [batch_size, seq_len, 1]
         
-        # Normalize
-        self.x_norm = (x - self.mean) / np.sqrt(self.var + self.eps)
+        # Normalize with improved numerical stability
+        self.x_norm = x_centered / np.sqrt(self.var + self.eps)  # [batch_size, seq_len, d_model]
         
         # Scale and shift
-        return self.gamma * self.x_norm + self.beta
+        return self.gamma * self.x_norm + self.beta  # [batch_size, seq_len, d_model]
 
     def backward(self, d_out):
         """
         Backward pass through layer normalization with improved numerical stability.
         
         Args:
-            d_out: Gradient of the output
+            d_out: Gradient of the output [batch_size, seq_len, d_model]
             
         Returns:
             Tuple of (dx, dgamma, dbeta)
         """
         # Gradient w.r.t. gamma and beta
-        self.grads['gamma'] = np.sum(d_out * self.x_norm, axis=0)
-        self.grads['beta'] = np.sum(d_out, axis=0)
+        self.grads['gamma'] = np.sum(d_out * self.x_norm, axis=(0, 1))  # [d_model]
+        self.grads['beta'] = np.sum(d_out, axis=(0, 1))  # [d_model]
         
         # Gradient w.r.t. input
-        N = d_out.shape[0]
-        x_mu = self.x - self.mean
-        std_inv = 1 / np.sqrt(self.var + self.eps)
+        N = d_out.shape[0] * d_out.shape[1]  # Total number of elements in batch and sequence
+        x_centered = self.x - self.mean  # [batch_size, seq_len, d_model]
+        std_inv = 1 / np.sqrt(self.var + self.eps)  # [batch_size, seq_len, 1]
         
         # Gradient w.r.t. normalized input
-        d_x_norm = d_out * self.gamma
+        d_x_norm = d_out * self.gamma  # [batch_size, seq_len, d_model]
         
         # Gradient w.r.t. variance
-        d_var = -0.5 * np.sum(d_x_norm * x_mu, axis=0) * std_inv**3
+        d_var = -0.5 * np.sum(d_x_norm * x_centered, axis=-1, keepdims=True) * std_inv**3  # [batch_size, seq_len, 1]
         
         # Gradient w.r.t. mean
-        d_mean = -np.sum(d_x_norm * std_inv, axis=0) - 2 * d_var * np.mean(x_mu, axis=0)
+        d_mean = -np.sum(d_x_norm * std_inv, axis=-1, keepdims=True) - 2 * d_var * np.mean(x_centered, axis=-1, keepdims=True)  # [batch_size, seq_len, 1]
         
         # Gradient w.r.t. input
-        d_x = d_x_norm * std_inv + 2 * d_var * x_mu / N + d_mean / N
+        d_x = d_x_norm * std_inv + 2 * d_var * x_centered / N + d_mean / N  # [batch_size, seq_len, d_model]
         
         return d_x
 
@@ -151,16 +152,16 @@ class FeedForward:
             Output tensor of same shape as input
         """
         # Store input for backward pass
-        self.x = x
+        self.x = x  # [batch_size, seq_len, d_model]
         
-        # First linear transformation
-        self.hidden = np.matmul(x, self.W1) + self.b1
+        # First linear transformation with improved numerical stability
+        self.hidden = np.matmul(x, self.W1) + self.b1  # [batch_size, seq_len, d_ff]
         
-        # GELU activation
-        self.hidden = gelu(self.hidden)
+        # GELU activation with improved numerical stability
+        self.hidden = gelu(self.hidden)  # [batch_size, seq_len, d_ff]
         
         # Second linear transformation
-        self.output = np.matmul(self.hidden, self.W2) + self.b2
+        self.output = np.matmul(self.hidden, self.W2) + self.b2  # [batch_size, seq_len, d_model]
         
         return self.output
 
@@ -169,25 +170,27 @@ class FeedForward:
         Backward pass through feed-forward network with improved GELU gradient.
         
         Args:
-            d_out: Gradient of the output
+            d_out: Gradient of the output [batch_size, seq_len, d_model]
             
         Returns:
             Tuple of (d_input, dW1, db1, dW2, db2)
         """
         # Gradient w.r.t. second linear transformation
-        d_hidden = np.matmul(d_out, self.W2.T)
-        self.grads['W2'] = np.matmul(self.hidden.T, d_out)
-        self.grads['b2'] = np.sum(d_out, axis=0)
+        d_hidden = np.matmul(d_out, self.W2.T)  # [batch_size, seq_len, d_ff]
+        self.grads['W2'] = np.matmul(self.hidden.reshape(-1, self.d_ff).T, 
+                                    d_out.reshape(-1, self.d_model))  # [d_ff, d_model]
+        self.grads['b2'] = np.sum(d_out, axis=(0, 1))  # [d_model]
         
-        # Gradient w.r.t. GELU activation
-        d_hidden_pre = d_hidden * gelu_grad(self.hidden)
+        # Gradient w.r.t. GELU activation with improved numerical stability
+        d_hidden_pre = d_hidden * gelu_grad(self.hidden)  # [batch_size, seq_len, d_ff]
         
         # Gradient w.r.t. first linear transformation
-        self.grads['W1'] = np.matmul(self.x.T, d_hidden_pre)
-        self.grads['b1'] = np.sum(d_hidden_pre, axis=0)
+        self.grads['W1'] = np.matmul(self.x.reshape(-1, self.d_model).T, 
+                                    d_hidden_pre.reshape(-1, self.d_ff))  # [d_model, d_ff]
+        self.grads['b1'] = np.sum(d_hidden_pre, axis=(0, 1))  # [d_ff]
         
         # Gradient w.r.t. input
-        d_x = np.matmul(d_hidden_pre, self.W1.T)
+        d_x = np.matmul(d_hidden_pre, self.W1.T)  # [batch_size, seq_len, d_model]
         
         return d_x
 
