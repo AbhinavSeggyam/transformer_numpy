@@ -52,6 +52,15 @@ class Encoder:
     def __init__(self, config):
         # Stack of identical encoder layers
         self.layers = [EncoderLayer(config) for _ in range(config.num_layers)]
+        # Initialize params dictionary
+        self.params = {}
+        for i, layer in enumerate(self.layers):
+            self.params[f'layer_{i}'] = {
+                'self_attn': layer.self_attn.params,
+                'norm1': layer.norm1.params,
+                'ff': layer.ff.params,
+                'norm2': layer.norm2.params
+            }
 
     def __call__(self, x, mask=None):
         # Pass input through each encoder layer sequentially

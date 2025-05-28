@@ -6,19 +6,16 @@ import os
 import json
 
 class Trainer:
-    def __init__(self, model, learning_rate=0.0001):
-        self.model = model
-        self.learning_rate = learning_rate
-        self.optimizer = AdamOptimizer(learning_rate=learning_rate)
-    def __init__(self, config):
+    def __init__(self, config, task_type='generation'):
         """
         Initialize the trainer with configuration.
-        
         Args:
             config: Configuration object containing model and training parameters
+            task_type: Type of task ('classification', 'sequence_labeling', 'generation', 'question_answering')
         """
         self.config = config
-        self.model = Transformer(config)
+        self.task_type = task_type
+        self.model = Transformer(config, task_type=task_type)
         self.optimizer = AdamOptimizer(
             learning_rate=config.learning_rate,
             beta1=0.9,
@@ -43,10 +40,10 @@ class Trainer:
         self.checkpoint_dir = 'checkpoints'
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
-    def step(self, loss):
+    def step(self, predictions, targets):
         """Perform one optimization step"""
         # Backward pass through the model
-        self.model.backward(loss)
+        self.model.backward(predictions, targets)
         
         # Update parameters using optimizer
         self._update_parameters(self.model.params, self.model.grads)
@@ -78,25 +75,16 @@ class Trainer:
     def train_step(self, src_batch, tgt_batch, src_mask, tgt_mask):
         """
         Perform a single training step.
-        
-        Args:
-            src_batch: Source sequence batch
-            tgt_batch: Target sequence batch
-            src_mask: Source sequence mask
-            tgt_mask: Target sequence mask
-            
-        Returns:
-            loss: Training loss for the step
         """
-        # Forward pass
-        predictions = self.model(src_batch, tgt_batch[:, :-1], src_mask, tgt_mask)
-        
-        # Calculate loss
-        loss = self.compute_loss(predictions, tgt_batch[:, 1:])
-        
-        # Backward pass
-        self.step(loss)
-        
+        # Forward pass and loss logic based on task type
+        if self.task_type in ['classification', 'question_answering']:
+            predictions = self.model(src_batch, src_mask=src_mask)
+            loss = self.compute_loss(predictions, tgt_batch)
+            self.step(predictions, tgt_batch)
+        else:  # generation, sequence labeling
+            predictions = self.model(src_batch, tgt_batch[:, :-1], src_mask, tgt_mask)
+            loss = self.compute_loss(predictions, tgt_batch[:, 1:])
+            self.step(predictions, tgt_batch[:, 1:])
         return loss
 
     def compute_loss(self, predictions, targets):
@@ -113,6 +101,10 @@ class Trainer:
         # Reshape predictions and targets for loss computation
         pred_flat = predictions.reshape(-1, predictions.shape[-1])
         target_flat = targets.reshape(-1)
+        
+        # Apply softmax to predictions
+        pred_flat = np.exp(pred_flat - np.max(pred_flat, axis=1, keepdims=True))
+        pred_flat = pred_flat / np.sum(pred_flat, axis=1, keepdims=True)
         
         # Compute cross-entropy loss
         loss = -np.mean(np.log(pred_flat[np.arange(len(target_flat)), target_flat] + 1e-9))
@@ -174,29 +166,17 @@ class Trainer:
             self.save_metrics()
 
     def validate(self, val_dataset):
-        """
-        Validate the model on the validation dataset.
-        
-        Args:
-            val_dataset: Validation dataset
-            
-        Returns:
-            val_loss: Average validation loss
-        """
         val_losses = []
-        
         for src_batch, tgt_batch in val_dataset:
-            # Create masks
             src_mask = create_padding_mask(src_batch)
-            tgt_mask = create_look_ahead_mask(tgt_batch.shape[1])
-            
-            # Forward pass
-            predictions = self.model(src_batch, tgt_batch[:, :-1], src_mask, tgt_mask)
-            
-            # Compute loss
-            loss = self.compute_loss(predictions, tgt_batch[:, 1:])
+            tgt_mask = create_look_ahead_mask(tgt_batch.shape[1]) if self.task_type not in ['classification', 'question_answering'] else None
+            if self.task_type in ['classification', 'question_answering']:
+                predictions = self.model(src_batch, src_mask=src_mask)
+                loss = self.compute_loss(predictions, tgt_batch)
+            else:
+                predictions = self.model(src_batch, tgt_batch[:, :-1], src_mask, tgt_mask)
+                loss = self.compute_loss(predictions, tgt_batch[:, 1:])
             val_losses.append(loss)
-        
         return np.mean(val_losses)
 
     def save_checkpoint(self, epoch, val_loss):
@@ -235,7 +215,7 @@ class AdamOptimizer:
         self.epsilon = epsilon
         self.m = {}  # First moment
         self.v = {}  # Second moment
-        self.t = 0   # Time step
+        self.t = 1   # Time step (start at 1 to avoid division by zero)
 
     def update(self, params, grads):
         """Update parameters using Adam optimization"""
@@ -290,10 +270,10 @@ class WarmupScheduler:
 
 if __name__ == '__main__':
     # Example usage
-    from config import Config
+    from config import TransformerConfig
     
     # Load configuration
-    config = Config()
+    config = TransformerConfig()
     
     # Create trainer
     trainer = Trainer(config)

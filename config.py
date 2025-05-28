@@ -9,7 +9,9 @@ class TransformerConfig:
                  max_len=512,
                  dropout=0.1,
                  num_classes=None,
-                 num_labels=None):
+                 num_labels=None,
+                 learning_rate=1e-4,
+                 warmup_steps=4000):
         """
         Initialize transformer configuration.
         
@@ -23,6 +25,8 @@ class TransformerConfig:
             dropout (float): Dropout rate
             num_classes (int): Number of classes for classification tasks
             num_labels (int): Number of labels for sequence labeling tasks
+            learning_rate (float): Learning rate for optimizer
+            warmup_steps (int): Warmup steps for learning rate scheduler
         """
         self.vocab_size = vocab_size
         self.d_model = d_model
@@ -33,4 +37,6 @@ class TransformerConfig:
         self.dropout = dropout
         self.num_classes = num_classes
         self.num_labels = num_labels
+        self.learning_rate = learning_rate
+        self.warmup_steps = warmup_steps
         
